@@ -1,0 +1,74 @@
+name: Employee Service CI/CD
+
+# Manual trigger from GitHub Actions UI
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+
+    # GitHub provides a temporary Ubuntu machine
+    runs-on: ubuntu-latest
+
+    # PostgreSQL required while running Spring Boot tests
+    services:
+      postgres:
+        image: postgres:16
+
+        env:
+          POSTGRES_DB: employee_db
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+
+        ports:
+          - 5432:5432
+
+        # Wait until PostgreSQL is ready
+        options: >-
+          --health-cmd="pg_isready -U user -d employee_db"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+
+      # 1. Download repository code to GitHub runner
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # 2. Configure Java
+      - name: Setup Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 3. Compile, test and create JAR
+      - name: Build application
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/employee_db
+          SPRING_DATASOURCE_USERNAME: user
+          SPRING_DATASOURCE_PASSWORD: password
+        run: mvn clean package
+
+      # 4. Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      # 5. Build Docker image using Dockerfile
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:latest \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:${{ github.sha }} \
+            .
+
+      # 6. Push both tags to Docker Hub
+      - name: Push Docker image
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:${{ github.sha }}
