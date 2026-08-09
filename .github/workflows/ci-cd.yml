@@ -5,12 +5,14 @@ on:
   workflow_dispatch:
 
 jobs:
+
+  # =========================
+  # CI + Docker Image Push
+  # =========================
   build-and-push:
 
-    # GitHub provides a temporary Ubuntu machine
     runs-on: ubuntu-latest
 
-    # PostgreSQL required while running Spring Boot tests
     services:
       postgres:
         image: postgres:16
@@ -23,7 +25,6 @@ jobs:
         ports:
           - 5432:5432
 
-        # Wait until PostgreSQL is ready
         options: >-
           --health-cmd="pg_isready -U user -d employee_db"
           --health-interval=10s
@@ -32,11 +33,11 @@ jobs:
 
     steps:
 
-      # 1. Download repository code to GitHub runner
+      # 1. Checkout repository
       - name: Checkout code
         uses: actions/checkout@v7
 
-      # 2. Configure Java
+      # 2. Setup Java
       - name: Setup Java 21
         uses: actions/setup-java@v5
         with:
@@ -44,7 +45,7 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # 3. Compile, test and create JAR
+      # 3. Build + Test
       - name: Build application
         env:
           SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/employee_db
@@ -52,14 +53,14 @@ jobs:
           SPRING_DATASOURCE_PASSWORD: password
         run: mvn clean package
 
-      # 4. Login to Docker Hub
+      # 4. Login Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      # 5. Build Docker image using Dockerfile
+      # 5. Build Docker image
       - name: Build Docker image
         run: |
           docker build \
@@ -67,8 +68,46 @@ jobs:
             -t ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:${{ github.sha }} \
             .
 
-      # 6. Push both tags to Docker Hub
+      # 6. Push Docker images
       - name: Push Docker image
         run: |
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:latest
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:${{ github.sha }}
+
+
+  # =========================
+  # CD - Deploy to EC2
+  # =========================
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    # Deploy only if build-and-push succeeds
+    needs: build-and-push
+
+    steps:
+
+      # 7. Configure EC2 SSH key
+      - name: Configure SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      # 8. SSH into EC2 and deploy latest image
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          ssh -i ~/.ssh/ec2_key \
+            "$EC2_USERNAME@$EC2_HOST" \
+            "docker compose pull && \
+             docker compose up -d && \
+             docker compose ps"

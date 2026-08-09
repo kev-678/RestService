@@ -8,15 +8,11 @@ services:
       POSTGRES_DB: employee_db
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
-    ports:
-      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
   employee-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: docker1234user/employee-service:latest
     container_name: employee-service
     restart: always
     ports:
