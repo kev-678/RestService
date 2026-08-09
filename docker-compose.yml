@@ -12,7 +12,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   employee-service:
-    image: docker1234user/employee-service:latest
+    image: docker1234user/employee-service:${IMAGE_TAG:-latest}
     container_name: employee-service
     restart: always
     ports:

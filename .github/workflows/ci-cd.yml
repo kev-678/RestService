@@ -105,9 +105,10 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
           ssh -i ~/.ssh/ec2_key \
             "$EC2_USERNAME@$EC2_HOST" \
-            "docker compose pull && \
-             docker compose up -d && \
+            "IMAGE_TAG=$IMAGE_TAG docker compose pull employee-service && \
+             IMAGE_TAG=$IMAGE_TAG docker compose up -d && \
              docker compose ps"
