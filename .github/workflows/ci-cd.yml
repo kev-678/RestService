@@ -4,14 +4,22 @@ name: Employee Service CI/CD
 on:
   workflow_dispatch:
 
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: employee-service
+
 jobs:
 
-  # =========================
-  # CI + Docker Image Push
-  # =========================
+  # ==================================================
+  # CI + Build Docker Image + Push to Amazon ECR
+  # ==================================================
   build-and-push:
 
     runs-on: ubuntu-latest
+
+    # Pass ECR registry address to deploy job
+    outputs:
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
 
     services:
       postgres:
@@ -37,6 +45,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+
       # 2. Setup Java
       - name: Setup Java 21
         uses: actions/setup-java@v5
@@ -45,7 +54,8 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # 3. Build + Test
+
+      # 3. Build + Test Spring Boot application
       - name: Build application
         env:
           SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/employee_db
@@ -53,41 +63,85 @@ jobs:
           SPRING_DATASOURCE_PASSWORD: password
         run: mvn clean package
 
-      # 4. Login Docker Hub
+
+      # 4. Login to Docker Hub
+      # Used for pulling public/base Docker images
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      # 5. Build Docker image
+
+      # 5. Build Docker image locally
+      # Dockerfile pulls eclipse-temurin:21-jdk from Docker Hub
       - name: Build Docker image
         run: |
           docker build \
-            -t ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:latest \
-            -t ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:${{ github.sha }} \
+            -t employee-service:latest \
+            -t employee-service:${{ github.sha }} \
             .
 
-      # 6. Push Docker images
-      - name: Push Docker image
+
+      # 6. Authenticate GitHub runner to AWS
+      # IAM User credentials -> Assume ECR Push Role
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-duration-seconds: 3600
+          aws-region: ${{ env.AWS_REGION }}
+
+
+      # 7. Login Docker client to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+
+      # 8. Tag local Docker image for ECR
+      - name: Tag Docker image for ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:latest
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/employee-service:${{ github.sha }}
+          docker tag \
+            employee-service:$IMAGE_TAG \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+          docker tag \
+            employee-service:latest \
+            $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
 
-  # =========================
-  # CD - Deploy to EC2
-  # =========================
+      # 9. Push Docker image to ECR
+      - name: Push Docker image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker push \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+          docker push \
+            $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+
+  # ==================================================
+  # CD - Deploy ECR Image to EC2
+  # ==================================================
   deploy:
 
     runs-on: ubuntu-latest
 
-    # Deploy only if build-and-push succeeds
+    # Run deployment only after image push succeeds
     needs: build-and-push
 
     steps:
 
-      # 7. Configure EC2 SSH key
+      # 10. Configure SSH
       - name: Configure SSH
         env:
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
@@ -96,19 +150,26 @@ jobs:
           mkdir -p ~/.ssh
 
           printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key
+
           chmod 600 ~/.ssh/ec2_key
 
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
-      # 8. SSH into EC2 and deploy latest image
+
+      # 11. SSH into EC2 and deploy exact Git commit image
       - name: Deploy to EC2
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           IMAGE_TAG: ${{ github.sha }}
+          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
         run: |
           ssh -i ~/.ssh/ec2_key \
             "$EC2_USERNAME@$EC2_HOST" \
-            "IMAGE_TAG=$IMAGE_TAG docker compose pull employee-service && \
+            "aws ecr get-login-password --region $AWS_REGION \
+             | docker login \
+                 --username AWS \
+                 --password-stdin $ECR_REGISTRY && \
+             IMAGE_TAG=$IMAGE_TAG docker compose pull employee-service && \
              IMAGE_TAG=$IMAGE_TAG docker compose up -d && \
-             docker compose ps"
+             IMAGE_TAG=$IMAGE_TAG docker compose ps"
