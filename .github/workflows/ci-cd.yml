@@ -1,23 +1,23 @@
 name: Employee Service CI/CD
 
-# Manual trigger from GitHub Actions UI
 on:
   workflow_dispatch:
 
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: employee-service
+  EKS_CLUSTER_NAME: employee-service-cluster
+  K8S_NAMESPACE: employee
 
 jobs:
 
   # ==================================================
-  # CI + Build Docker Image + Push to Amazon ECR
+  # CI - Build + Test + Docker Build + Push to ECR
   # ==================================================
   build-and-push:
 
     runs-on: ubuntu-latest
 
-    # Pass ECR registry address to deploy job
     outputs:
       ecr_registry: ${{ steps.login-ecr.outputs.registry }}
 
@@ -55,7 +55,7 @@ jobs:
           cache: maven
 
 
-      # 3. Build + Test Spring Boot application
+      # 3. Build and test Spring Boot application
       - name: Build application
         env:
           SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/employee_db
@@ -65,7 +65,6 @@ jobs:
 
 
       # 4. Login to Docker Hub
-      # Used for pulling public/base Docker images
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
@@ -73,8 +72,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
 
-      # 5. Build Docker image locally
-      # Dockerfile pulls eclipse-temurin:21-jdk from Docker Hub
+      # 5. Build Docker image
       - name: Build Docker image
         run: |
           docker build \
@@ -83,8 +81,7 @@ jobs:
             .
 
 
-      # 6. Authenticate GitHub runner to AWS
-      # IAM User credentials -> Assume ECR Push Role
+      # 6. Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -96,13 +93,13 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
 
-      # 7. Login Docker client to Amazon ECR
+      # 7. Login to Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
 
-      # 8. Tag local Docker image for ECR
+      # 8. Tag Docker image for ECR
       - name: Tag Docker image for ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -131,7 +128,7 @@ jobs:
 
 
   # ==================================================
-  # CD - Deploy ECR Image to EC2
+  # CD - Deploy ECR Image to EKS using Helm
   # ==================================================
   deploy:
 
@@ -141,9 +138,13 @@ jobs:
 
     steps:
 
+      # 10. Checkout repository
+      # Needed because Helm chart exists in the repo
       - name: Checkout code
         uses: actions/checkout@v7
 
+
+      # 11. Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -154,27 +155,43 @@ jobs:
           role-skip-session-tagging: true
           aws-region: ${{ env.AWS_REGION }}
 
+
+      # 12. Connect GitHub runner to EKS
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
             --region $AWS_REGION \
-            --name employee-service-cluster
+            --name $EKS_CLUSTER_NAME
 
+
+      # 13. Setup Helm
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
+
+      # 14. Validate Helm chart
+      - name: Helm lint
+        run: |
+          helm lint helm/employee-service
+
+
+      # 15. Deploy employee-service to EKS
       - name: Deploy to EKS
         run: |
           helm upgrade --install employee-service \
             helm/employee-service \
-            --namespace employee \
+            --namespace $K8S_NAMESPACE \
+            --create-namespace \
             --set image.repository=${{ needs.build-and-push.outputs.ecr_registry }}/${{ env.ECR_REPOSITORY }} \
             --set image.tag=${{ github.sha }} \
             --wait \
             --timeout 10m
 
+
+      # 16. Verify Kubernetes deployment
       - name: Verify deployment
         run: |
-          kubectl get pods -n employee
-          kubectl get deployments -n employee
-          kubectl get services -n employee
+          kubectl get nodes
+          kubectl get pods -n $K8S_NAMESPACE
+          kubectl get deployments -n $K8S_NAMESPACE
+          kubectl get services -n $K8S_NAMESPACE
