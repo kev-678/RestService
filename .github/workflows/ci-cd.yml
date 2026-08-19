@@ -137,40 +137,44 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # Run deployment only after image push succeeds
     needs: build-and-push
 
     steps:
 
-      # 10. Configure SSH
-      - name: Configure SSH
-        env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
         run: |
-          mkdir -p ~/.ssh
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name employee-service-cluster
 
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
 
-          chmod 600 ~/.ssh/ec2_key
-
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-
-
-      # 11. SSH into EC2 and deploy exact Git commit image
-      - name: Deploy to EC2
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-          IMAGE_TAG: ${{ github.sha }}
-          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
+      - name: Deploy to EKS
         run: |
-          ssh -i ~/.ssh/ec2_key \
-            "$EC2_USERNAME@$EC2_HOST" \
-            "aws ecr get-login-password --region $AWS_REGION \
-             | docker login \
-                 --username AWS \
-                 --password-stdin $ECR_REGISTRY && \
-             IMAGE_TAG=$IMAGE_TAG docker compose pull employee-service && \
-             IMAGE_TAG=$IMAGE_TAG docker compose up -d && \
-             IMAGE_TAG=$IMAGE_TAG docker compose ps"
+          helm upgrade --install employee-service \
+            helm/employee-service \
+            --namespace employee \
+            --set image.repository=${{ needs.build-and-push.outputs.ecr_registry }}/${{ env.ECR_REPOSITORY }} \
+            --set image.tag=${{ github.sha }} \
+            --wait \
+            --timeout 10m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n employee
+          kubectl get deployments -n employee
+          kubectl get services -n employee

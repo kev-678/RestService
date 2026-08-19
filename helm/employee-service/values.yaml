@@ -1,0 +1,20 @@
+replicaCount: 1
+
+image:
+  repository: 196253397204.dkr.ecr.ap-south-1.amazonaws.com/employee-service
+  pullPolicy: IfNotPresent
+  tag: latest
+
+fullnameOverride: employee-service
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
