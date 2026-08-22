@@ -8,8 +8,9 @@ image:
 fullnameOverride: employee-service
 
 service:
-  type: LoadBalancer
+  type: ClusterIP
   port: 8080
+
 
 resources:
   requests:
