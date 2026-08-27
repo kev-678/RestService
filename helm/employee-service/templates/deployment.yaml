@@ -20,7 +20,7 @@ spec:
             - containerPort: 8080
           env:
             - name: SPRING_DATASOURCE_URL
-              value: jdbc:postgresql://postgres:5432/employee_db
+              value: jdbc:postgresql://employee-postgres.c9ksqcokmf8w.ap-south-1.rds.amazonaws.com:5432/employee_db
 
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
