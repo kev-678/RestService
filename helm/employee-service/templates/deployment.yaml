@@ -3,6 +3,7 @@ kind: Deployment
 metadata:
   name: {{ .Values.fullnameOverride }}
 spec:
+  serviceAccountName: employee-service-sa
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
