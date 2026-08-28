@@ -28,5 +28,10 @@ public class EmployeeApi {
         return ResponseEntity.status(HttpStatus.CREATED).body(employeeService.save(employee));
     }
 
+    @GetMapping("/employees/{id}")
+    public ResponseEntity<Employee> getEmployeeById(@PathVariable Long id) {
+        return ResponseEntity.ok(employeeService.getEmployeeById(id));
+    }
+
 
 }
